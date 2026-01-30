@@ -1,0 +1,289 @@
+
+=== 2026-01-31 ===
+[]
+=== 2026-02-01 ===
+[]
+=== 2026-01-31 ===
+[]
+=== 2026-02-01 ===
+[
+  {
+    "league": "Premier League",
+    "home": "Manchester United",
+    "away": "Chelsea",
+    "kickoff": ""
+  },
+  {
+    "league": "Premier League",
+    "home": "Liverpool",
+    "away": "Arsenal",
+    "kickoff": ""
+  },
+  {
+    "league": "Premier League",
+    "home": "Tottenham Hotspur",
+    "away": "Manchester City",
+    "kickoff": ""
+  },
+  {
+    "league": "La Liga",
+    "home": "Real Madrid",
+    "away": "FC Barcelona",
+    "kickoff": ""
+  },
+  {
+    "league": "La Liga",
+    "home": "Atletico Madrid",
+    "away": "Sevilla FC",
+    "kickoff": ""
+  },
+  {
+    "league": "La Liga",
+    "home": "Real Betis",
+    "away": "Real Sociedad",
+    "kickoff": ""
+  },
+  {
+    "league": "Serie A",
+    "home": "Juventus",
+    "away": "Inter Milan",
+    "kickoff": ""
+  },
+  {
+    "league": "Serie A",
+    "home": "AC Milan",
+    "away": "AS Roma",
+    "kickoff": ""
+  },
+  {
+    "league": "Serie A",
+    "home": "Napoli",
+    "away": "Lazio",
+    "kickoff": ""
+  },
+  {
+    "league": "Bundesliga",
+    "home": "Bayern Munich",
+    "away": "Borussia Dortmund",
+    "kickoff": ""
+  },
+  {
+    "league": "Bundesliga",
+    "home": "RB Leipzig",
+    "away": "Bayer Leverkusen",
+    "kickoff": ""
+  },
+  {
+    "league": "Bundesliga",
+    "home": "Eintracht Frankfurt",
+    "away": "VfB Stuttgart",
+    "kickoff": ""
+  },
+  {
+    "league": "Ligue 1",
+    "home": "Paris Saint-Germain",
+    "away": "Olympique Marseille",
+    "kickoff": ""
+  },
+  {
+    "league": "Ligue 1",
+    "home": "Olympique Lyon",
+    "away": "AS Monaco",
+    "kickoff": ""
+  },
+  {
+    "league": "Ligue 1",
+    "home": "Lille OSC",
+    "away": "OGC Nice",
+    "kickoff": ""
+  }
+]
+=== 2026-01-29 ===
+[
+  {
+    "league": "Premier League",
+    "home": "Manchester United",
+    "away": "Liverpool",
+    "kickoff": ""
+  },
+  {
+    "league": "Premier League",
+    "home": "Arsenal",
+    "away": "Chelsea",
+    "kickoff": ""
+  },
+  {
+    "league": "La Liga",
+    "home": "Real Madrid",
+    "away": "Barcelona",
+    "kickoff": ""
+  },
+  {
+    "league": "La Liga",
+    "home": "Atletico Madrid",
+    "away": "Sevilla",
+    "kickoff": ""
+  },
+  {
+    "league": "Serie A",
+    "home": "Juventus",
+    "away": "Inter Milan",
+    "kickoff": ""
+  },
+  {
+    "league": "Serie A",
+    "home": "AC Milan",
+    "away": "Napoli",
+    "kickoff": ""
+  },
+  {
+    "league": "Bundesliga",
+    "home": "Bayern Munich",
+    "away": "Borussia Dortmund",
+    "kickoff": ""
+  },
+  {
+    "league": "Bundesliga",
+    "home": "RB Leipzig",
+    "away": "Bayer Leverkusen",
+    "kickoff": ""
+  },
+  {
+    "league": "Ligue 1",
+    "home": "Paris Saint-Germain",
+    "away": "Marseille",
+    "kickoff": ""
+  },
+  {
+    "league": "Ligue 1",
+    "home": "Lyon",
+    "away": "Monaco",
+    "kickoff": ""
+  }
+]
+=== 2026-01-29 ===
+[
+  {
+    "league": "Premier League",
+    "home": "Manchester United",
+    "away": "Liverpool",
+    "kickoff": ""
+  },
+  {
+    "league": "Premier League",
+    "home": "Arsenal",
+    "away": "Chelsea",
+    "kickoff": ""
+  },
+  {
+    "league": "La Liga",
+    "home": "Real Madrid",
+    "away": "Barcelona",
+    "kickoff": ""
+  },
+  {
+    "league": "La Liga",
+    "home": "Atlético Madrid",
+    "away": "Sevilla",
+    "kickoff": ""
+  },
+  {
+    "league": "Serie A",
+    "home": "Juventus",
+    "away": "Inter Milan",
+    "kickoff": ""
+  },
+  {
+    "league": "Serie A",
+    "home": "AC Milan",
+    "away": "Napoli",
+    "kickoff": ""
+  },
+  {
+    "league": "Bundesliga",
+    "home": "Bayern Munich",
+    "away": "Borussia Dortmund",
+    "kickoff": ""
+  },
+  {
+    "league": "Bundesliga",
+    "home": "RB Leipzig",
+    "away": "Bayer Leverkusen",
+    "kickoff": ""
+  },
+  {
+    "league": "Ligue 1",
+    "home": "Paris Saint-Germain",
+    "away": "Olympique Marseille",
+    "kickoff": ""
+  },
+  {
+    "league": "Ligue 1",
+    "home": "Lyon",
+    "away": "Monaco",
+    "kickoff": ""
+  }
+]
+=== 2026-01-29 ===
+[
+  {
+    "league": "Premier League",
+    "home": "Manchester United",
+    "away": "Tottenham Hotspur",
+    "kickoff": ""
+  },
+  {
+    "league": "Premier League",
+    "home": "Chelsea",
+    "away": "Newcastle United",
+    "kickoff": ""
+  },
+  {
+    "league": "La Liga",
+    "home": "Real Madrid",
+    "away": "Valencia CF",
+    "kickoff": ""
+  },
+  {
+    "league": "La Liga",
+    "home": "Real Betis",
+    "away": "Athletic Club",
+    "kickoff": ""
+  },
+  {
+    "league": "Serie A",
+    "home": "Inter Milan",
+    "away": "AS Roma",
+    "kickoff": ""
+  },
+  {
+    "league": "Serie A",
+    "home": "Napoli",
+    "away": "Fiorentina",
+    "kickoff": ""
+  },
+  {
+    "league": "Bundesliga",
+    "home": "Bayern Munich",
+    "away": "Borussia Dortmund",
+    "kickoff": ""
+  },
+  {
+    "league": "Bundesliga",
+    "home": "RB Leipzig",
+    "away": "Bayer Leverkusen",
+    "kickoff": ""
+  },
+  {
+    "league": "Ligue 1",
+    "home": "Paris Saint-Germain",
+    "away": "Olympique Marseille",
+    "kickoff": ""
+  },
+  {
+    "league": "Ligue 1",
+    "home": "Olympique Lyon",
+    "away": "AS Monaco",
+    "kickoff": ""
+  }
+]

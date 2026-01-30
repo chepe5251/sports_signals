@@ -1,0 +1,6 @@
+python-dotenv
+pyodbc
+pandas
+scikit-learn
+requests
+google-genai
