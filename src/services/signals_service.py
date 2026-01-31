@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Iterable
 
 import pandas as pd
+from zoneinfo import ZoneInfo
 from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
@@ -14,7 +15,7 @@ from src.api.api_gemini import generate_answer, parse_date_range, select_value_p
 from src.api.api_football import get_fixtures_by_date, get_odds
 from src.api.api_telegram import send_message
 from src.database.connection import get_connection
-from src.utils.config import API_FOOTBALL_KEY
+from src.utils.config import API_FOOTBALL_KEY, APP_TIMEZONE
 
 
 FEATURES = [
@@ -46,6 +47,8 @@ class MatchPrediction:
     home_win_prob: float
     score: float
     value_edge: float | None
+    bet_side: str
+    bet_prob: float
 
 
 def _load_training_dataset() -> pd.DataFrame:
@@ -87,6 +90,7 @@ def _fetch_scheduled_matches(target_date: date) -> list[dict]:
     # Fetch via API-Football and store in DB
     _store_api_football_fixtures([target_date])
 
+    now = _now()
     conn = get_connection()
     df = pd.read_sql(
         """
@@ -105,10 +109,11 @@ def _fetch_scheduled_matches(target_date: date) -> list[dict]:
         JOIN core.Teams at ON at.team_id = m.away_team_id
         WHERE m.status = 'scheduled'
           AND CAST(m.match_date AS date) = ?
+          AND m.match_date >= ?
         ORDER BY m.match_date
         """,
         conn,
-        params=[target_date],
+        params=[target_date, now],
     )
     conn.close()
     return df.to_dict(orient="records")
@@ -359,14 +364,25 @@ def get_predictions_for_date(target_date: date, min_prob: float = 0.6) -> list[M
 
     predictions: list[MatchPrediction] = []
     for (m, feats, odds), p in zip(meta, probs):
+        home_prob = float(p)
+        draw_prob = 0.25
+        away_prob = max(0.0, 1.0 - home_prob - draw_prob)
+        side, side_prob, side_edge = _best_value_side(
+            home_prob=home_prob,
+            draw_prob=draw_prob,
+            away_prob=away_prob,
+            home_odds=odds.get("home_odds"),
+            draw_odds=odds.get("draw_odds"),
+            away_odds=odds.get("away_odds"),
+        )
         candidate = {
-            "prob": float(p),
+            "prob": side_prob,
             "home_winrate_5": feats["home_winrate_5"],
             "away_winrate_5": feats["away_winrate_5"],
             "diff_pts_5": feats["diff_pts_5"],
             "diff_winrate_5": feats["diff_winrate_5"],
-            "home_odds": odds.get("home_odds"),
-            "value_edge": _value_edge(float(p), odds.get("home_odds")),
+            "value_edge": side_edge,
+            "side": side,
         }
         if not _passes_strategy(candidate, min_prob):
             continue
@@ -378,9 +394,11 @@ def get_predictions_for_date(target_date: date, min_prob: float = 0.6) -> list[M
                 home=str(m["home_name"]),
                 away=str(m["away_name"]),
                 kickoff=str(m["match_date"]),
-                home_win_prob=float(p),
+                home_win_prob=home_prob,
                 score=float(score),
-                value_edge=candidate.get("value_edge"),
+                value_edge=side_edge,
+                bet_side=side,
+                bet_prob=side_prob,
             )
         )
     predictions.sort(key=lambda x: x.score, reverse=True)
@@ -415,7 +433,7 @@ def _fallback_answer(predictions: Iterable[MatchPrediction], target_date: date, 
 
 def answer_question(question: str, target_date: date | None = None, min_prob: float = 0.6) -> str:
     if target_date is None:
-        target_date = date.today()
+        target_date = _today()
 
     # Solo responder a comandos. Para texto libre, devolver menu.
     if question.strip().startswith("/"):
@@ -431,7 +449,7 @@ def answer_question(question: str, target_date: date | None = None, min_prob: fl
 
 def answer_command(command: str, target_date: date | None = None, min_prob: float = 0.6) -> str:
     if target_date is None:
-        target_date = date.today()
+        target_date = _today()
 
     cmd = command.lower()
 
@@ -536,12 +554,22 @@ def _passes_strategy(candidate: dict, min_prob: float) -> bool:
     """
     if candidate["prob"] < min_prob:
         return False
-    if candidate["diff_pts_5"] < 0:
-        return False
-    if candidate["home_winrate_5"] < 0.4:
-        return False
     if candidate.get("value_edge") is None or candidate["value_edge"] < 0.02:
         return False
+    if candidate.get("side") == "home":
+        if candidate["diff_pts_5"] < 0:
+            return False
+        if candidate["home_winrate_5"] < 0.4:
+            return False
+    if candidate.get("side") == "away":
+        if candidate["diff_pts_5"] > 0:
+            return False
+        if candidate["away_winrate_5"] < 0.4:
+            return False
+    if candidate.get("side") == "draw":
+        # para empate, exigimos probabilidades altas y forma pareja
+        if abs(candidate["diff_pts_5"]) > 1:
+            return False
     return True
 
 
@@ -558,6 +586,35 @@ def _strategy_score(candidate: dict) -> float:
         + max(candidate["diff_winrate_5"], 0) * 0.3
         + edge * 0.5
     )
+
+
+def _best_value_side(
+    home_prob: float,
+    draw_prob: float,
+    away_prob: float,
+    home_odds: float | None,
+    draw_odds: float | None,
+    away_odds: float | None,
+) -> tuple[str, float, float | None]:
+    home_edge = _value_edge(home_prob, home_odds)
+    draw_edge = _value_edge(draw_prob, draw_odds)
+    away_edge = _value_edge(away_prob, away_odds)
+
+    candidates: list[tuple[str, float, float | None]] = [
+        ("home", home_prob, home_edge),
+        ("draw", draw_prob, draw_edge),
+        ("away", away_prob, away_edge),
+    ]
+    # elegir el mayor edge válido
+    best = None
+    for side, prob, edge in candidates:
+        if edge is None:
+            continue
+        if best is None or edge > best[2]:
+            best = (side, prob, edge)
+    if best is not None:
+        return best
+    return ("home", home_prob, None)
 
 
 def _value_edge(model_prob: float, home_odds: float | None) -> float | None:
@@ -590,11 +647,12 @@ def _fetch_and_store_odds(match_row: dict) -> dict:
                     if name in {"Match Winner", "1X2"}:
                         values = bet.get("values") or []
                         for v in values:
-                            if v.get("value") == "Home":
+                            val = v.get("value")
+                            if val in {"Home", "1"}:
                                 home_odds = float(v.get("odd"))
-                            elif v.get("value") == "Draw":
+                            elif val in {"Draw", "X"}:
                                 draw_odds = float(v.get("odd"))
-                            elif v.get("value") == "Away":
+                            elif val in {"Away", "2"}:
                                 away_odds = float(v.get("odd"))
                         break
                 if home_odds:
@@ -630,6 +688,14 @@ def _fetch_and_store_odds(match_row: dict) -> dict:
 def _format_date_with_weekday(d: date) -> str:
     weekdays = ["lunes", "martes", "miercoles", "jueves", "viernes", "sabado", "domingo"]
     return f"{weekdays[d.weekday()]} {d.isoformat()}"
+
+
+def _side_label(side: str) -> str:
+    if side == "away":
+        return "Visitante"
+    if side == "draw":
+        return "Empate"
+    return "Local"
 
 
 def _apply_gemini_selection(preds: list[MatchPrediction], key: str, label: str) -> list[MatchPrediction]:
@@ -674,8 +740,8 @@ def _record_pick(p: MatchPrediction, target_date: date) -> None:
             )
             VALUES (?, ?, GETDATE(), ?)
             """,
-            p.match_id, "value_homewin_v1",
-            p.match_id, "value_homewin_v1", float(p.home_win_prob)
+            p.match_id, "value_side_v1",
+            p.match_id, "value_side_v1", float(p.bet_prob)
         )
         conn.commit()
         conn.close()
@@ -697,9 +763,9 @@ def _report_accuracy() -> str:
             WHERE m.status = 'finished'
               AND m.home_goals IS NOT NULL
               AND m.away_goals IS NOT NULL
-              AND p.model_name = ?
+                AND p.model_name = ?
             """,
-            "value_homewin_v1",
+            "value_side_v1",
         )
         row = cur.fetchone()
         total = int(row[0] or 0)
@@ -723,7 +789,7 @@ def _report_accuracy() -> str:
               AND p.model_name = ?
               AND o.home_odds IS NOT NULL
             """,
-            "value_homewin_v1",
+            "value_side_v1",
         )
         row2 = cur.fetchone()
         profit_units = float(row2[0] or 0.0)
@@ -741,7 +807,7 @@ def _report_accuracy() -> str:
               AND p.model_name = ?
               AND m.match_date >= DATEADD(day, -30, GETDATE())
             """,
-            "value_homewin_v1",
+            "value_side_v1",
         )
         total_30 = int(cur.fetchone()[0] or 0)
 
@@ -829,9 +895,25 @@ def _is_cache_valid(entry: object) -> bool:
         return False
     try:
         cache_day = pd.to_datetime(ts).date()
-        return cache_day == date.today()
+        return cache_day == _today()
     except Exception:
         return False
+
+
+def _today() -> date:
+    try:
+        tz = ZoneInfo(APP_TIMEZONE)
+    except Exception:
+        tz = ZoneInfo("UTC")
+    return datetime.now(tz).date()
+
+
+def _now() -> datetime:
+    try:
+        tz = ZoneInfo(APP_TIMEZONE)
+    except Exception:
+        tz = ZoneInfo("UTC")
+    return datetime.now(tz).replace(tzinfo=None)
 
 
 def _template_partidos_dia(predictions: list[MatchPrediction], target_date: date) -> str:
@@ -851,7 +933,7 @@ def _template_partidos_dia(predictions: list[MatchPrediction], target_date: date
         _record_pick(p, target_date)
         lines.append(
             f"• {p.league}: {p.home} vs {p.away} | "
-            f"Prob {p.home_win_prob:.1%}{star}{edge} | {p.kickoff} | Apuesta: Local"
+            f"Prob {p.bet_prob:.1%}{star}{edge} | {p.kickoff} | Apuesta: {_side_label(p.bet_side)}"
         )
     return "\n".join(lines)
 
@@ -869,7 +951,7 @@ def _template_partidos_finde(preds_by_date: list[tuple[date, list[MatchPredictio
             _record_pick(p, d)
             lines.append(
                 f"  • {p.league}: {p.home} vs {p.away} | "
-                f"Prob {p.home_win_prob:.1%}{star}{edge} | {p.kickoff} | Apuesta: Local"
+                f"Prob {p.bet_prob:.1%}{star}{edge} | {p.kickoff} | Apuesta: {_side_label(p.bet_side)}"
             )
     return "\n".join(lines)
 
@@ -891,7 +973,7 @@ def _template_partidos_apostar(predictions: list[MatchPrediction], target_date: 
         _record_pick(p, target_date)
         lines.append(
             f"• {p.league}: {p.home} vs {p.away} | "
-            f"Prob {p.home_win_prob:.1%}{star}{edge} | {p.kickoff} | Apuesta: Local"
+            f"Prob {p.bet_prob:.1%}{star}{edge} | {p.kickoff} | Apuesta: {_side_label(p.bet_side)}"
         )
     return "\n".join(lines)
 
