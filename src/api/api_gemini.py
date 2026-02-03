@@ -8,6 +8,7 @@ from google import genai
 from google.genai import types
 
 from src.utils.config import GEMINI_API_KEY, GEMINI_MODEL
+from src.utils.leagues import PRIMARY_LEAGUES
 
 
 _client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
@@ -82,7 +83,7 @@ def parse_date_range(question: str, today_iso: str) -> dict | None:
     user_msg = (
         f"Hoy es {today_iso}.\n"
         f"Texto del usuario: {question}\n"
-        "Interpreta frases como 'mañana', 'la otra semana', 'el finde', "
+        "Interpreta frases como 'manana', 'la otra semana', 'el finde', "
         "'este sabado', 'proximo domingo', etc."
     )
     try:
@@ -127,13 +128,14 @@ def select_value_picks(
     for m in matches:
         lines.append(
             f"{m['match_id']} | {m['league']} | {m['home']} vs {m['away']} | "
-            f"prob={m['home_win_prob']:.3f} | valor={m.get('value_edge')}"
+            f"side={m.get('bet_side')} | prob={m.get('bet_prob')} | valor={m.get('value_edge')}"
         )
     data_block = "\n".join(lines) if lines else "(sin partidos)"
     user_msg = (
         f"Rango: {target_label}\n"
         "Selecciona solo los partidos de mayor valor esperado. "
-        "Prioriza valor positivo (value_edge > 0) y probabilidad alta.\n"
+        "Prioriza value_edge positivo y probabilidad alta del lado sugerido. "
+        "Evita picks sin odds salvo probabilidad muy alta.\n"
         f"Datos:\n{data_block}"
     )
     try:
@@ -159,7 +161,7 @@ def select_value_picks(
 
 def get_top5_fixtures(target_date: str) -> list[dict]:
     """
-    Devuelve fixtures de las 5 grandes ligas via Gemini.
+    Devuelve fixtures de las ligas principales via Gemini.
     Formato esperado:
     [
       {"league":"Premier League","home":"Team A","away":"Team B","kickoff":"YYYY-MM-DDTHH:MM:SS"},
@@ -169,14 +171,15 @@ def get_top5_fixtures(target_date: str) -> list[dict]:
     if _client is None:
         return []
 
+    leagues_str = ", ".join(PRIMARY_LEAGUES)
     system_msg = (
         "Devuelve SOLO un JSON valido (sin texto extra). "
-        "Solo incluye las 5 grandes ligas: Premier League, La Liga, Serie A, Bundesliga, Ligue 1. "
+        f"Solo incluye estas ligas: {leagues_str}. "
         "Si no sabes la hora exacta, deja kickoff vacio."
     )
     user_msg = (
         f"Fecha: {target_date}\n"
-        "Necesito la lista de partidos de las 5 grandes ligas para esa fecha. "
+        "Necesito la lista de partidos de estas ligas para esa fecha. "
         "Cada item debe tener: league, home, away, kickoff (ISO 8601 o vacio). "
         "Si hay partidos, devuelvelos aunque no tengas la hora exacta."
     )

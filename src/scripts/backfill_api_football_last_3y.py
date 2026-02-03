@@ -11,15 +11,7 @@ if str(ROOT) not in sys.path:
 import pandas as pd
 from src.api.api_football import get_fixtures_by_season
 from src.database.connection import get_connection
-
-
-LEAGUE_MAP = {
-    39: "Premier League",
-    140: "La Liga",
-    135: "Serie A",
-    78: "Bundesliga",
-    61: "Ligue 1",
-}
+from src.utils.leagues import LEAGUE_MAP
 
 
 def _season_for_today() -> int:
@@ -84,16 +76,17 @@ def _normalize_kickoff(raw: str, season: int) -> str:
             return f"{season}-08-01 12:00:00"
 
 
-def main() -> None:
+def main(reset: bool) -> None:
     latest_season = _season_for_today()
     seasons = [latest_season - 2, latest_season - 1, latest_season]
 
     conn = get_connection()
     cur = conn.cursor()
 
-    print("Borrando tablas core...")
-    _clear_core_tables(cur)
-    conn.commit()
+    if reset:
+        print("Borrando tablas core...")
+        _clear_core_tables(cur)
+        conn.commit()
 
     total = 0
 
@@ -150,4 +143,9 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--reset", action="store_true", help="Borra tablas core antes de recargar datos")
+    args = parser.parse_args()
+    main(reset=args.reset)

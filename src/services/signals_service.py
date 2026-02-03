@@ -16,6 +16,7 @@ from src.api.api_football import get_fixtures_by_date, get_odds
 from src.api.api_telegram import send_message
 from src.database.connection import get_connection
 from src.utils.config import API_FOOTBALL_KEY, APP_TIMEZONE
+from src.utils.leagues import LEAGUE_MAP
 
 
 FEATURES = [
@@ -23,18 +24,21 @@ FEATURES = [
     "home_avg_ga_5",
     "home_pts_5",
     "home_winrate_5",
+    "home_drawrate_5",
     "away_avg_gf_5",
     "away_avg_ga_5",
     "away_pts_5",
     "away_winrate_5",
+    "away_drawrate_5",
     "diff_pts_5",
     "diff_avg_gf_5",
     "diff_avg_ga_5",
     "diff_winrate_5",
+    "diff_drawrate_5",
 ]
 
 N_FORM = 10
-MODEL_PATH = Path("models/logreg_homewin_v1.pkl")
+MODEL_PATH = Path("models/logreg_homewin_v2.pkl")
 
 
 @dataclass
@@ -97,6 +101,7 @@ def _fetch_scheduled_matches(target_date: date) -> list[dict]:
         SELECT
             m.match_id,
             m.match_date,
+            m.league_id,
             l.name AS league_name,
             ht.name AS home_name,
             at.name AS away_name,
@@ -179,20 +184,12 @@ def _store_api_football_fixtures(dates: list[date]) -> None:
     if not dates:
         return
 
-    league_map = {
-        39: "Premier League",
-        140: "La Liga",
-        135: "Serie A",
-        78: "Bundesliga",
-        61: "Ligue 1",
-    }
-
     conn = get_connection()
     cur = conn.cursor()
 
     for d in dates:
         season = _season_for_date(d)
-        for api_league_id, league_name in league_map.items():
+        for api_league_id, league_name in LEAGUE_MAP.items():
             fixtures = get_fixtures_by_date(api_league_id, season, d.isoformat())
             for f in fixtures:
                 fixture = f.get("fixture") or {}
@@ -247,6 +244,7 @@ def _fetch_finished_matches_before(target_date: date) -> pd.DataFrame:
         """
         SELECT
             match_id,
+            league_id,
             match_date,
             home_team_id,
             away_team_id,
@@ -280,6 +278,29 @@ def _build_team_history(df: pd.DataFrame) -> pd.DataFrame:
     return long
 
 
+def _league_draw_rates(df: pd.DataFrame) -> dict[int, float]:
+    if "league_id" not in df.columns or df.empty:
+        return {}
+    draws = (df["home_goals"] == df["away_goals"]).astype(int)
+    rates = (
+        df.assign(is_draw=draws)
+        .groupby("league_id")["is_draw"]
+        .mean()
+        .to_dict()
+    )
+    return {int(k): float(v) for k, v in rates.items()}
+
+
+def _estimate_draw_prob(
+    league_draw_rate: float,
+    home_drawrate: float,
+    away_drawrate: float,
+) -> float:
+    base = 0.5 * (home_drawrate + away_drawrate)
+    blended = 0.6 * base + 0.4 * league_draw_rate
+    return min(max(blended, 0.08), 0.38)
+
+
 def _compute_form(rows: pd.DataFrame) -> dict | None:
     if len(rows) < N_FORM:
         return None
@@ -290,6 +311,7 @@ def _compute_form(rows: pd.DataFrame) -> dict | None:
         "avg_ga_5": float(recent["ga"].mean()),
         "pts_5": float(pts),
         "winrate_5": float(recent["win"].mean()),
+        "drawrate_5": float(recent["draw"].mean()),
     }
 
 
@@ -316,15 +338,18 @@ def _match_features(
         "home_avg_ga_5": home_form["avg_ga_5"],
         "home_pts_5": home_form["pts_5"],
         "home_winrate_5": home_form["winrate_5"],
+        "home_drawrate_5": home_form["drawrate_5"],
         "away_avg_gf_5": away_form["avg_gf_5"],
         "away_avg_ga_5": away_form["avg_ga_5"],
         "away_pts_5": away_form["pts_5"],
         "away_winrate_5": away_form["winrate_5"],
+        "away_drawrate_5": away_form["drawrate_5"],
     }
     feats["diff_pts_5"] = feats["home_pts_5"] - feats["away_pts_5"]
     feats["diff_avg_gf_5"] = feats["home_avg_gf_5"] - feats["away_avg_gf_5"]
     feats["diff_avg_ga_5"] = feats["home_avg_ga_5"] - feats["away_avg_ga_5"]
     feats["diff_winrate_5"] = feats["home_winrate_5"] - feats["away_winrate_5"]
+    feats["diff_drawrate_5"] = feats["home_drawrate_5"] - feats["away_drawrate_5"]
     return feats
 
 
@@ -338,6 +363,7 @@ def get_predictions_for_date(target_date: date, min_prob: float = 0.6) -> list[M
         return []
 
     team_history = _build_team_history(finished)
+    league_draw_rates = _league_draw_rates(finished)
     model = _load_or_train_model()
 
     rows = []
@@ -365,8 +391,16 @@ def get_predictions_for_date(target_date: date, min_prob: float = 0.6) -> list[M
     predictions: list[MatchPrediction] = []
     for (m, feats, odds), p in zip(meta, probs):
         home_prob = float(p)
-        draw_prob = 0.25
-        away_prob = max(0.0, 1.0 - home_prob - draw_prob)
+        league_draw_rate = float(league_draw_rates.get(int(m["league_id"]), 0.26))
+        draw_prob = _estimate_draw_prob(
+            league_draw_rate=league_draw_rate,
+            home_drawrate=feats["home_drawrate_5"],
+            away_drawrate=feats["away_drawrate_5"],
+        )
+        away_prob = 1.0 - home_prob - draw_prob
+        if away_prob < 0:
+            draw_prob = max(0.05, 1.0 - home_prob)
+            away_prob = max(0.0, 1.0 - home_prob - draw_prob)
         side, side_prob, side_edge = _best_value_side(
             home_prob=home_prob,
             draw_prob=draw_prob,
@@ -381,6 +415,8 @@ def get_predictions_for_date(target_date: date, min_prob: float = 0.6) -> list[M
             "away_winrate_5": feats["away_winrate_5"],
             "diff_pts_5": feats["diff_pts_5"],
             "diff_winrate_5": feats["diff_winrate_5"],
+            "drawrate_avg_5": 0.5 * (feats["home_drawrate_5"] + feats["away_drawrate_5"]),
+            "league_draw_rate": league_draw_rate,
             "value_edge": side_edge,
             "side": side,
         }
@@ -439,10 +475,25 @@ def answer_question(question: str, target_date: date | None = None, min_prob: fl
     if question.strip().startswith("/"):
         return answer_command(question.strip(), target_date=target_date, min_prob=min_prob)
 
+    lowered = question.strip().lower()
+    if "semana" in lowered:
+        dates = _week_dates(target_date, days=7)
+        preds_by_date = [(d, get_predictions_for_date(d, min_prob=min_prob)) for d in dates]
+        flat = [p for _, preds in preds_by_date for p in preds]
+        flat = _apply_gemini_selection(
+            flat,
+            key=f"gemini_select:semana:{dates[0].isoformat()}_{dates[-1].isoformat()}",
+            label=f"{dates[0].isoformat()}_{dates[-1].isoformat()}",
+        )
+        filtered_ids = {p.match_id for p in flat}
+        preds_by_date = [(d, [p for p in preds if p.match_id in filtered_ids]) for d, preds in preds_by_date]
+        return _template_partidos_semana(preds_by_date)
+
     return (
         "Hola! Usa los comandos del menu:\n"
         "- /partidos_dia\n"
         "- /partidos_finde\n"
+        "- /partidos_semana\n"
         "- /partidos_apostar"
     )
 
@@ -478,6 +529,19 @@ def answer_command(command: str, target_date: date | None = None, min_prob: floa
         preds_by_date = [(d, [p for p in preds if p.match_id in filtered_ids]) for d, preds in preds_by_date]
         return _template_partidos_finde(preds_by_date)
 
+    if cmd.startswith("/partidos_semana"):
+        dates = _week_dates(target_date, days=7)
+        preds_by_date = [(d, get_predictions_for_date(d, min_prob=min_prob)) for d in dates]
+        flat = [p for _, preds in preds_by_date for p in preds]
+        flat = _apply_gemini_selection(
+            flat,
+            key=f"gemini_select:semana:{dates[0].isoformat()}_{dates[-1].isoformat()}",
+            label=f"{dates[0].isoformat()}_{dates[-1].isoformat()}",
+        )
+        filtered_ids = {p.match_id for p in flat}
+        preds_by_date = [(d, [p for p in preds if p.match_id in filtered_ids]) for d, preds in preds_by_date]
+        return _template_partidos_semana(preds_by_date)
+
     if cmd.startswith("/partidos_apostar"):
         preds = get_predictions_for_date(target_date, min_prob=min_prob)
         preds = _apply_gemini_selection(
@@ -494,6 +558,7 @@ def answer_command(command: str, target_date: date | None = None, min_prob: floa
         "Comandos disponibles:\n"
         "- /partidos_dia\n"
         "- /partidos_finde\n"
+        "- /partidos_semana\n"
         "- /partidos_apostar\n"
         "- /reporte"
     )
@@ -508,6 +573,15 @@ def _weekend_dates(start: date) -> list[date]:
     saturday = start + timedelta(days=(5 - wd) % 7)
     sunday = saturday + timedelta(days=1)
     return [saturday, sunday]
+
+
+def _week_dates(start: date, days: int = 7) -> list[date]:
+    out = []
+    d = start
+    for _ in range(max(days, 1)):
+        out.append(d)
+        d += timedelta(days=1)
+    return out
 
 
 def _fallback_answer_multi(preds_by_date: list[tuple[date, list[MatchPrediction]]], min_prob: float) -> str:
@@ -547,28 +621,39 @@ def _expand_date_range(start_iso: str, end_iso: str, max_days: int = 14) -> list
 
 def _passes_strategy(candidate: dict, min_prob: float) -> bool:
     """
-    Estrategia conservadora:
+    Estrategia de valor:
     - prob >= min_prob
-    - ventaja reciente del local (diff_pts_5 >= 0)
-    - consistencia local (home_winrate_5 >= 0.4)
+    - si hay odds, exige edge positivo
+    - si no hay odds, exige prob muy alta y forma clara
     """
     if candidate["prob"] < min_prob:
         return False
-    if candidate.get("value_edge") is None or candidate["value_edge"] < 0.02:
-        return False
+    edge = candidate.get("value_edge")
+    if edge is None:
+        if candidate["prob"] < max(min_prob, 0.68):
+            return False
+        if abs(candidate["diff_pts_5"]) < 2:
+            return False
+        if abs(candidate["diff_winrate_5"]) < 0.1:
+            return False
+    else:
+        if edge < 0.015:
+            return False
     if candidate.get("side") == "home":
         if candidate["diff_pts_5"] < 0:
             return False
-        if candidate["home_winrate_5"] < 0.4:
+        if candidate["home_winrate_5"] < 0.45:
             return False
     if candidate.get("side") == "away":
         if candidate["diff_pts_5"] > 0:
             return False
-        if candidate["away_winrate_5"] < 0.4:
+        if candidate["away_winrate_5"] < 0.45:
             return False
     if candidate.get("side") == "draw":
-        # para empate, exigimos probabilidades altas y forma pareja
-        if abs(candidate["diff_pts_5"]) > 1:
+        # para empate, exigimos forma pareja y alta tasa de empate
+        if abs(candidate["diff_pts_5"]) > 1.5:
+            return False
+        if candidate.get("drawrate_avg_5", 0) < 0.28:
             return False
     return True
 
@@ -580,11 +665,22 @@ def _strategy_score(candidate: dict) -> float:
     - bonifica diferencia de puntos y winrate
     """
     edge = candidate.get("value_edge") or 0
+    drawrate = candidate.get("drawrate_avg_5", 0)
+    side = candidate.get("side")
+    form_pts = candidate["diff_pts_5"]
+    form_win = candidate["diff_winrate_5"]
+    if side == "away":
+        form_pts = -form_pts
+        form_win = -form_win
+    if side == "draw":
+        form_pts = 0
+        form_win = 0
     return (
-        candidate["prob"] * 0.65
-        + max(candidate["diff_pts_5"], 0) * 0.02
-        + max(candidate["diff_winrate_5"], 0) * 0.3
-        + edge * 0.5
+        candidate["prob"] * 0.6
+        + max(form_pts, 0) * 0.03
+        + max(form_win, 0) * 0.25
+        + drawrate * 0.15
+        + edge * 0.7
     )
 
 
@@ -614,7 +710,7 @@ def _best_value_side(
             best = (side, prob, edge)
     if best is not None:
         return best
-    return ("home", home_prob, None)
+    return max(candidates, key=lambda x: x[1])
 
 
 def _value_edge(model_prob: float, home_odds: float | None) -> float | None:
@@ -712,6 +808,8 @@ def _apply_gemini_selection(preds: list[MatchPrediction], key: str, label: str) 
             "home": p.home,
             "away": p.away,
             "home_win_prob": p.home_win_prob,
+            "bet_side": p.bet_side,
+            "bet_prob": p.bet_prob,
             "value_edge": p.value_edge,
         }
         for p in preds
@@ -815,14 +913,15 @@ def _report_accuracy() -> str:
     except Exception:
         return "No pude calcular el reporte de aciertos."
 
-    return (
-        "📈 REPORTE DE ACIERTOS\n"
-        f"- Picks cerrados: {total}\n"
-        f"- Aciertos: {wins}\n"
-        f"- Accuracy: {acc:.1%}\n"
-        f"- ROI (unidades): {roi:.2%} sobre {bets} picks con odds\n"
-        f"- Picks ultimos 30 dias: {total_30}"
-    )
+    lines = [
+        "REPORTE DE ACIERTOS",
+        f"- Picks cerrados: {total}",
+        f"- Aciertos: {wins}",
+        f"- Accuracy: {acc:.1%}",
+        f"- ROI (unidades): {roi:.2%} sobre {bets} picks con odds",
+        f"- Picks ultimos 30 dias: {total_30}",
+    ]
+    return "\n".join(lines)
 
 
 def _cached_gemini_or_template(
@@ -918,65 +1017,81 @@ def _now() -> datetime:
 
 def _template_partidos_dia(predictions: list[MatchPrediction], target_date: date) -> str:
     lines = [
-        "✅ PARTIDOS DEL DIA",
-        f"📅 {_format_date_with_weekday(target_date)}",
-        "💎 Solo picks de valor",
-        "📊 Basado en ultimos 10 partidos",
+        "[OK] PARTIDOS DEL DIA",
+        f"Fecha: {_format_date_with_weekday(target_date)}",
+        "Filtro: solo picks de valor",
+        "Base: ultimos 10 partidos",
         "",
     ]
     if not predictions:
-        lines.append("🚫 No hay partidos de valor hoy.")
+        lines.append("No hay partidos de valor hoy.")
         return "\n".join(lines)
     for p in predictions:
-        star = " ⭐" if p.home_win_prob >= 0.6 else ""
+        star = " *" if p.home_win_prob >= 0.6 else ""
         edge = f" | Valor +{p.value_edge:.1%}" if p.value_edge is not None else ""
         _record_pick(p, target_date)
         lines.append(
-            f"• {p.league}: {p.home} vs {p.away} | "
+            f"- {p.league}: {p.home} vs {p.away} | "
             f"Prob {p.bet_prob:.1%}{star}{edge} | {p.kickoff} | Apuesta: {_side_label(p.bet_side)}"
         )
     return "\n".join(lines)
 
-
 def _template_partidos_finde(preds_by_date: list[tuple[date, list[MatchPrediction]]]) -> str:
-    lines = ["✅ PARTIDOS DEL FINDE", "💎 Solo picks de valor", "📊 Basado en ultimos 10 partidos", ""]
+    lines = ["[OK] PARTIDOS DEL FINDE", "Filtro: solo picks de valor", "Base: ultimos 10 partidos", ""]
     for d, preds in preds_by_date:
-        lines.append(f"📅 {_format_date_with_weekday(d)}")
+        lines.append(f"Fecha: {_format_date_with_weekday(d)}")
         if not preds:
-            lines.append("  🚫 No hay picks de valor.")
+            lines.append("  No hay picks de valor.")
             continue
         for p in preds:
-            star = " ⭐" if p.home_win_prob >= 0.6 else ""
+            star = " *" if p.home_win_prob >= 0.6 else ""
             edge = f" | Valor +{p.value_edge:.1%}" if p.value_edge is not None else ""
             _record_pick(p, d)
             lines.append(
-                f"  • {p.league}: {p.home} vs {p.away} | "
+                f"  - {p.league}: {p.home} vs {p.away} | "
                 f"Prob {p.bet_prob:.1%}{star}{edge} | {p.kickoff} | Apuesta: {_side_label(p.bet_side)}"
             )
     return "\n".join(lines)
 
 
+def _template_partidos_semana(preds_by_date: list[tuple[date, list[MatchPrediction]]]) -> str:
+    lines = ["📅 PARTIDOS DE LA SEMANA", "🔎 Solo picks de valor", "📊 Base: ultimos 10 partidos", ""]
+    for d, preds in preds_by_date:
+        lines.append(f"🗓️ { _format_date_with_weekday(d)}")
+        if not preds:
+            lines.append("  • (sin picks de valor)")
+            continue
+        for p in preds:
+            star = " ⭐" if p.home_win_prob >= 0.6 else ""
+            edge = f" | 💎 Valor +{p.value_edge:.1%}" if p.value_edge is not None else ""
+            _record_pick(p, d)
+            lines.append(
+                f"  ⚽ {p.league}: {p.home} vs {p.away}\n"
+                f"     🎯 Prob {p.bet_prob:.1%}{star}{edge}\n"
+                f"     🕒 {p.kickoff} | 🧾 Apuesta: {_side_label(p.bet_side)}"
+            )
+    return "\n".join(lines)
+
 def _template_partidos_apostar(predictions: list[MatchPrediction], target_date: date) -> str:
     lines = [
-        "✅ PARTIDOS PARA APOSTAR",
-        f"📅 {_format_date_with_weekday(target_date)}",
-        "💎 Solo picks de valor (prob >= 60%, forma positiva)",
-        "📊 Basado en ultimos 10 partidos",
+        "[OK] PARTIDOS PARA APOSTAR",
+        f"Fecha: {_format_date_with_weekday(target_date)}",
+        "Filtro: valor (prob >= 60%, forma positiva)",
+        "Base: ultimos 10 partidos",
         "",
     ]
     if not predictions:
-        lines.append("🚫 No hay picks de valor.")
+        lines.append("No hay picks de valor.")
         return "\n".join(lines)
     for p in predictions:
-        star = " ⭐" if p.home_win_prob >= 0.6 else ""
+        star = " *" if p.home_win_prob >= 0.6 else ""
         edge = f" | Valor +{p.value_edge:.1%}" if p.value_edge is not None else ""
         _record_pick(p, target_date)
         lines.append(
-            f"• {p.league}: {p.home} vs {p.away} | "
+            f"- {p.league}: {p.home} vs {p.away} | "
             f"Prob {p.bet_prob:.1%}{star}{edge} | {p.kickoff} | Apuesta: {_side_label(p.bet_side)}"
         )
     return "\n".join(lines)
-
 
 def answer_and_notify(question: str, target_date: date | None = None, min_prob: float = 0.6) -> str:
     response = answer_question(question, target_date=target_date, min_prob=min_prob)
